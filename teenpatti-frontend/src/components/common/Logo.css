@@ -1,0 +1,42 @@
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-family: var(--font-display);
+  color: var(--ivory-100);
+}
+
+.logo__suit {
+  color: var(--rail-brass-bright);
+}
+
+.logo__text {
+  font-family: var(--font-devanagari);
+  font-weight: 700;
+}
+
+.logo__text em {
+  color: var(--rail-brass-bright);
+  font-style: normal;
+}
+
+.logo--lg {
+  font-size: var(--step-3);
+}
+.logo--lg .logo__suit {
+  font-size: var(--step-4);
+}
+
+.logo--sm {
+  font-size: var(--step-1);
+}
+.logo--sm .logo__suit {
+  font-size: var(--step-2);
+}
+
+.logo--md {
+  font-size: var(--step-2);
+}
+.logo--md .logo__suit {
+  font-size: var(--step-3);
+}

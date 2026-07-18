@@ -1,0 +1,43 @@
+.chip-stack {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* Chips lean into a clear, readable diagonal stack instead of a flat vertical
+   blob — each layer offsets both up and slightly sideways, like a real stack
+   viewed at an angle, so individual chips (and the count) stay legible. */
+.chip-stack__pile {
+  position: relative;
+}
+
+.chip-stack--sm .chip-stack__pile {
+  width: 38px;
+  height: 34px;
+}
+.chip-stack--md .chip-stack__pile {
+  width: 52px;
+  height: 46px;
+}
+.chip-stack--lg .chip-stack__pile {
+  width: 68px;
+  height: 60px;
+}
+
+.chip-stack__chip {
+  position: absolute;
+  left: calc(var(--i) * 3px);
+  bottom: calc(var(--i) * 5px);
+  filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.35));
+}
+
+.chip-stack__label {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: var(--step--1);
+  color: var(--ink-900);
+  background: var(--rail-brass-bright);
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  white-space: nowrap;
+}

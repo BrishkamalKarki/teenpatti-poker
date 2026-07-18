@@ -1,0 +1,202 @@
+.player-seat {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+  width: 100px;
+  transition: opacity 0.2s ease;
+}
+
+.player-seat.is-folded {
+  opacity: 0.4;
+}
+
+.player-seat__cards {
+  display: flex;
+  gap: 4px;
+  height: 24px;
+}
+
+.player-seat__ring {
+  position: relative;
+  background: linear-gradient(180deg, rgba(20, 74, 59, 0.9), rgba(8, 17, 14, 0.92));
+  border: 1px solid var(--felt-line);
+  border-radius: var(--radius-md);
+  padding: 0.5rem 0.7rem 0.4rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  min-width: 92px;
+  box-shadow: var(--shadow-card);
+}
+
+.player-seat__avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(201, 162, 75, 0.14);
+  border: 1px solid var(--rail-brass-dim);
+  color: var(--rail-brass-bright);
+  font-family: var(--font-display);
+  font-size: 0.68rem;
+  letter-spacing: 0.02em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.player-seat.is-you .player-seat__ring {
+  border-color: var(--rail-brass);
+  box-shadow: 0 0 0 2px rgba(201, 162, 75, 0.25), var(--shadow-card);
+}
+
+.player-seat.is-turn .player-seat__ring {
+  border-color: var(--rail-brass-bright);
+  box-shadow: 0 0 0 3px rgba(230, 200, 120, 0.45), var(--shadow-card);
+  animation: seat-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes seat-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(230, 200, 120, 0.45), var(--shadow-card); }
+  50% { box-shadow: 0 0 0 6px rgba(230, 200, 120, 0.2), var(--shadow-card); }
+}
+
+/* Bet chips, shown as an actual mini chip stack + a legible amount badge
+   (previously just a small pill of text — hard to parse at a glance). */
+.player-seat__bet-stack {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  background: rgba(8, 17, 14, 0.55);
+  border: 1px solid var(--felt-line);
+  border-radius: 999px;
+  padding: 0.15rem 0.55rem 0.15rem 0.3rem;
+}
+
+.player-seat__bet-amount {
+  font-family: var(--font-display);
+  font-size: 0.68rem;
+  color: var(--rail-brass-bright);
+  letter-spacing: 0.03em;
+}
+
+.player-seat__winner-tag {
+  font-size: 0.65rem;
+  color: var(--rail-brass-bright);
+  font-family: var(--font-display);
+  white-space: nowrap;
+}
+
+.player-seat__name {
+  font-family: var(--font-display);
+  font-size: var(--step--1);
+  color: var(--ivory-100);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 84px;
+}
+
+.player-seat__dealer-btn {
+  position: absolute;
+  top: -10px;
+  right: -6px;
+  background: var(--ivory-100);
+  color: var(--ink-900);
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.65rem;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--rail-brass);
+  z-index: 2;
+}
+
+.player-seat__host-tag,
+.player-seat__folded-tag {
+  font-size: 0.6rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--rail-brass-bright);
+}
+
+.player-seat__folded-tag {
+  color: var(--ember-500);
+}
+
+.player-seat__chips {
+  font-family: var(--font-body);
+  font-size: 0.62rem;
+  color: var(--rail-brass-bright);
+  font-weight: 600;
+}
+
+.player-seat__seen-tag {
+  font-family: var(--font-devanagari);
+  font-size: 0.6rem;
+  letter-spacing: 0.04em;
+  color: var(--ivory-200);
+  opacity: 0.75;
+}
+
+.player-seat__seen-tag.is-seen {
+  color: var(--nepal-blue-bright);
+  opacity: 1;
+}
+
+/* Empty seat — an inviting placeholder instead of plain "Open seat" text:
+   a glowing dashed ring with a "+" and a two-line label. */
+.player-seat--empty {
+  gap: 0.3rem;
+}
+
+.player-seat__empty-ring {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  border: 1.5px dashed var(--rail-brass-dim);
+  background: radial-gradient(circle, rgba(201, 162, 75, 0.08), rgba(8, 17, 14, 0.35));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+  animation: empty-seat-breathe 3s ease-in-out infinite;
+}
+
+.player-seat__empty-plus {
+  font-family: var(--font-display);
+  font-size: 1.4rem;
+  line-height: 1;
+  color: var(--rail-brass-dim);
+  transition: color 0.2s ease;
+}
+
+@keyframes empty-seat-breathe {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(201, 162, 75, 0.16);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(201, 162, 75, 0);
+  }
+}
+
+.player-seat__empty-label {
+  font-family: var(--font-display);
+  font-size: 0.7rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ivory-200);
+}
+
+.player-seat__empty-sub {
+  font-size: 0.6rem;
+  color: var(--ivory-200);
+  opacity: 0.55;
+}
