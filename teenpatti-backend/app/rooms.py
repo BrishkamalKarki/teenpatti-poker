@@ -1,72 +1,85 @@
-"""rooms.py — in-memory room registry + the per-viewer "what should this
-socket actually see" logic.
+# stores active game room in memory and manages their room code and life-cycle and determines what each player are allowed to see
 
-Storage is a plain dict in process memory. That's fine for a single-process
-demo/small-table deployment (matches the trust model of the contract, which
-already trusts a single host address per room). If you outgrow one process,
-swap ROOMS for Redis and keep the function signatures the same.
-"""
 import copy
 import random
-import string
 import time
 
-ROOMS = {}  # roomCode -> engine state dict
-ROOM_LAST_TOUCHED = {}  # roomCode -> unix timestamp, for the optional reaper
+ROOMS = {}  
+CREATED_AT = {}  
 
+ROOM_TTL_SECONDS = 6 * 60 * 60
 
-def _random_code(length=6):
-    alphabet = string.ascii_uppercase + string.digits
-    return "".join(random.choice(alphabet) for _ in range(length))
+CODE_ALPHABET = "3456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+CODE_LENGTH = 5
 
 
 def generate_room_code():
     while True:
-        code = _random_code()
+        code = "".join(random.choice(CODE_ALPHABET) for _ in range(CODE_LENGTH))
         if code not in ROOMS:
             return code
 
 
-def touch(room_code):
-    ROOM_LAST_TOUCHED[room_code] = time.time()
+def normalize_code(code):
+    return (code or "").strip().upper()
 
 
-def get_room(room_code):
-    return ROOMS.get(room_code)
+def get_room(code):
+    return ROOMS.get(normalize_code(code))
 
 
-def save_room(room_code, state):
-    ROOMS[room_code] = state
-    touch(room_code)
+def save_room(code, state):
+    code = normalize_code(code)
+    ROOMS[code] = state
+    CREATED_AT.setdefault(code, time.time())
 
 
-def delete_room(room_code):
-    ROOMS.pop(room_code, None)
-    ROOM_LAST_TOUCHED.pop(room_code, None)
+def delete_room(code):
+    code = normalize_code(code)
+    ROOMS.pop(code, None)
+    CREATED_AT.pop(code, None)
+
+
+def sweep_expired():
+    cutoff = time.time() - ROOM_TTL_SECONDS
+    for code in [c for c, t in CREATED_AT.items() if t < cutoff]:
+        delete_room(code)
+
+
+def _stringify_wei(value):
+    if isinstance(value, dict):
+        return {k: (str(v) if k.endswith("Wei") and isinstance(v, int) else _stringify_wei(v)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_stringify_wei(v) for v in value]
+    return value
 
 
 def viewer_state(state, viewer_player_id):
-    """Returns a copy of `state` safe to send to one specific player.
-
-    - Strips the undealt `deck` — no reason a client ever needs it, and
-      sending it would leak the order of upcoming cards.
-    - Masks every OTHER seated player's hole cards unless the hand is over
-      (`roundComplete`) and that player didn't pack. This is the one thing
-      the reference JS engine leaves to "the frontend won't render it" — a
-      real multi-process server shouldn't rely on client-side honesty for
-      that, so it's enforced here instead.
-    """
     out = copy.deepcopy(state)
     out.pop("deck", None)
 
-    reveal_all = out["phase"] == "roundComplete" and out.get("winners") is not None
+    revealed = out["phase"] == "finished" and out.get("winners") is not None
 
     for seat in out["seats"]:
         if not seat or not seat.get("cards"):
             continue
-        is_viewer = seat["playerId"] == viewer_player_id
-        show = is_viewer or (reveal_all and not seat["packed"])
-        if not show:
+        is_me = seat["playerId"] == viewer_player_id
+        if not (is_me or (revealed and not seat["packed"])):
             seat["cards"] = [None, None, None]
 
-    return out
+    out["you"] = viewer_player_id
+    return _stringify_wei(out)
+
+
+def public_summary(state):
+    seated = [s for s in state["seats"] if s]
+    return {
+        "roomCode": state["roomCode"],
+        "gameId": state["gameId"],
+        "entryFeeWei": str(state["entryFeeWei"]),
+        "playerCount": len(seated),
+        "maxSeats": state["maxSeats"],
+        "phase": state["phase"],
+        "hostName": next((s["name"] for s in seated if s["isHost"]), None),
+        "players": [s["name"] for s in seated],
+    }

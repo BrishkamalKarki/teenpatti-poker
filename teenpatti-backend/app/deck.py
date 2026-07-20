@@ -1,10 +1,5 @@
-"""deck.py — 1:1 port of the frontend's src/utils/deck.js.
+# builds 52-card deck and shuffles it
 
-Kept deliberately dumb: build a standard 52-card deck, Fisher-Yates shuffle it.
-Card shape matches the JS side exactly so the JSON sent over the socket looks
-identical to what the frontend's own local engine would produce:
-    { "rank": "A", "suit": "spades", "id": "A-spades" }
-"""
 import random
 
 SUITS = ["spades", "hearts", "diamonds", "clubs"]

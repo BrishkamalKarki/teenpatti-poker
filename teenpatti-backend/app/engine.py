@@ -1,263 +1,331 @@
-"""engine.py — port of the frontend's src/utils/teenPattiEngine.js.
+# handles the core game logic : managing room logic, dealing with the cards, enforcing the turns, determining the winners
 
-Takes a room `state` dict and returns a (possibly mutated) state dict. This is
-the SERVER's copy and is the source of truth — the frontend keeps its own copy
-of the original JS file purely for optimistic/local preview. Gameplay rules
-must stay identical on both sides, so if you change betting/showdown logic
-here, mirror it in teenPattiEngine.js too (and vice versa).
-
-Seat shape: { playerId, name, chips, isHost, packed, seen, cards }
-Room phase: 'waiting' -> 'playing' -> 'roundComplete' -> 'playing' -> ...
-
-Nepali Teen Patti rules encoded here:
-  - Boot (ante): every seated player pays `bootAmount` into the pot before cards are dealt.
-  - Blind vs Seen: a player who hasn't looked at their cards ("blind") owes `stake`
-    per bet; once they look ("seen"), they owe `2 * stake`. Classic Nepali/Indian
-    home-game convention — seeing your cards costs double.
-  - Chaal: calling the current stake. Raising updates `stake` for the table.
-  - Pack: folding. If only one player remains, they win the pot uncontested.
-  - Show: once exactly 2 players remain, either can call a show by paying the
-    current stake; hands are compared and the pot is awarded (split on an exact tie).
-
-Simplifications vs. real-table Teen Patti (documented on purpose, not bugs):
-  - No side-show (privately comparing cards with the previous bettor mid-round).
-  - No all-in / side pots — a bet must be fully covered by the player's chips,
-    otherwise they must pack. Skipped to keep on-chain settlement simple for v1.
-
-Addition not present in the original JS file: `leave_seat`. The reference
-engine never needed it because the frontend never called an "unseat" function —
-but a real server has to do *something* when a browser tab disconnects or a
-player explicitly leaves. See its docstring below for the rule used.
-"""
 from .deck import build_deck, shuffle
 from .evaluator import evaluate_three, compare_scores, score_label
 
+WAITING = "waiting"
+PLAYING = "playing"
+FINISHED = "finished"
+
+
+def eth(wei):
+    # formats the wei as short eth
+    text = f"{int(wei) / 10**18:.6f}".rstrip("0").rstrip(".")
+    return f"{text or '0'} ETH"
+
 
 class EngineError(Exception):
-    pass
+    """A move the rules don't allow. The server turns these into a friendly
+    error toast for the one player who tried it; nothing else is affected."""
 
 
-def create_room_state(room_code, max_seats, boot_amount):
+def create_room_state(room_code, game_id, entry_fee_wei, max_seats):
     return {
         "roomCode": room_code,
-        "maxSeats": max_seats,
-        "bootAmount": boot_amount,
-        "seats": [None] * max_seats,
+        "gameId": game_id,
+        "entryFeeWei": int(entry_fee_wei),
+        "maxSeats": int(max_seats),
+        "seats": [None] * int(max_seats),
         "deck": [],
-        "pot": 0,
-        "stake": boot_amount,
-        "phase": "waiting",  # 'waiting' | 'playing' | 'roundComplete'
-        "dealerIndex": -1,
+        "potWei": 0,
+        "stakeWei": int(entry_fee_wei),
+        "phase": WAITING,
+        "dealerIndex": 0,
         "currentTurnIndex": -1,
         "winners": None,
+        "paid": False,
+        "txs": [],
+        "log": [],
     }
 
 
-def _occupied_indices(seats):
+def _occupied(seats):
     return [i for i, s in enumerate(seats) if s]
 
 
-def _next_occupied_index(seats, from_index):
-    occ = _occupied_indices(seats)
-    if not occ:
-        return -1
-    n = len(seats)
-    start = (from_index + 1) % n
-    for i in range(n):
-        idx = (start + i) % n
-        if seats[idx]:
-            return idx
-    return occ[0]
-
-
-def _active_indices(seats):
+def _active(seats):
+    """Seats still in the hand: seated, dealt in, and not packed."""
     return [i for i, s in enumerate(seats) if s and not s["packed"]]
 
 
 def _next_active_index(seats, from_index):
     n = len(seats)
-    start = (from_index + 1) % n
-    for i in range(n):
-        idx = (start + i) % n
-        s = seats[idx]
-        if s and not s["packed"]:
+    for step in range(1, n + 1):
+        idx = (from_index + step) % n
+        seat = seats[idx]
+        if seat and not seat["packed"]:
             return idx
     return -1
 
 
-def seat_player(state, player_id, name, chips, is_host=False):
-    """Seats a player in the first open chair. Mutates and returns state."""
+def find_seat_index(state, player_id):
+    return next((i for i, s in enumerate(state["seats"]) if s and s["playerId"] == player_id), -1)
+
+
+def seat_player(state, player_id, name, is_host=False):
+    """Sits a player in the first free chair. They have already paid the entry
+    fee on-chain by the time this is called, so their money is in the pot."""
+    if state["phase"] != WAITING:
+        raise EngineError("This game has already started — ask the host for a new room code")
+    if find_seat_index(state, player_id) != -1:
+        raise EngineError("That wallet is already seated in this room")
     try:
-        seat_index = state["seats"].index(None)
+        index = state["seats"].index(None)
     except ValueError:
-        raise EngineError("Room is full")
-    state["seats"][seat_index] = {
+        raise EngineError("Room is full") from None
+
+    state["seats"][index] = {
         "playerId": player_id,
         "name": name,
-        "chips": chips,
         "isHost": is_host,
         "packed": False,
         "seen": False,
         "cards": [],
+        "stakedWei": state["entryFeeWei"],
+        "lastAction": None,
     }
+    state["potWei"] += state["entryFeeWei"]
+    add_log(state, f"{name} paid the {eth(state['entryFeeWei'])} entry fee and sat down")
     return state
 
 
 def leave_seat(state, player_id):
-    """Not in the original JS engine — added so `room:leave` has something to do.
+    """Someone closed their tab or clicked Leave.
 
-    Rule: you can only vacate a seat (freeing it up for someone else) when no
-    chips are at risk — i.e. phase is 'waiting' or 'roundComplete'. If a hand
-    is in progress ('playing'), leaving is treated as packing instead, same as
-    if you'd clicked Pack — your boot/bets stay in the pot and the hand
-    continues normally for everyone else.
+    Before the cards are out, they simply give up their chair (their entry fee
+    stays in the pot — it is already inside the contract and only finishGame()
+    can move it). Once a hand is in progress, leaving is treated as packing,
+    exactly as if they had clicked Pack, so the hand can still finish.
     """
-    seat_index = next((i for i, s in enumerate(state["seats"]) if s and s["playerId"] == player_id), -1)
-    if seat_index == -1:
+    index = find_seat_index(state, player_id)
+    if index == -1:
         return state
 
-    if state["phase"] == "playing":
-        return apply_action(state, player_id, "pack", None)
+    if state["phase"] == PLAYING:
+        return _pack(state, index, voluntary=False)
 
-    state["seats"][seat_index] = None
+    if state["phase"] == WAITING:
+        add_log(state, f"{state['seats'][index]['name']} left the table")
+        state["seats"][index] = None
     return state
 
 
-def start_round(state):
-    occ = _occupied_indices(state["seats"])
-    if len(occ) < 2:
-        raise EngineError("Need at least 2 players to start a round")
+
+def start_game(state):
+    """Host deals. Called right after their startGame() transaction confirms."""
+    if state["phase"] != WAITING:
+        raise EngineError("The cards are already out")
+    if len(_occupied(state["seats"])) < 2:
+        raise EngineError("Need at least 2 players to deal")
 
     deck = shuffle(build_deck())
-    pot = 0
-    for s in state["seats"]:
-        if not s:
-            continue
-        if s["chips"] < state["bootAmount"]:
-            raise EngineError(f"{s['name']} does not have enough chips for the boot")
-        pot += state["bootAmount"]
-        s["packed"] = False
-        s["seen"] = False
-        s["cards"] = [deck.pop(), deck.pop(), deck.pop()]
-        s["chips"] -= state["bootAmount"]
+    for seat in state["seats"]:
+        if seat:
+            seat["cards"] = [deck.pop(), deck.pop(), deck.pop()]
+            seat["packed"] = False
+            seat["seen"] = False
+            seat["lastAction"] = None
 
-    dealer_index = _next_occupied_index(state["seats"], state.get("dealerIndex", -1))
-    first_to_act = _next_occupied_index(state["seats"], dealer_index)
-
+    occupied = _occupied(state["seats"])
+    state["dealerIndex"] = occupied[0]
+    state["currentTurnIndex"] = _next_active_index(state["seats"], occupied[0])
     state["deck"] = deck
-    state["pot"] = pot
-    state["phase"] = "playing"
-    state["dealerIndex"] = dealer_index
-    state["currentTurnIndex"] = first_to_act
-    state["stake"] = state["bootAmount"]
+    state["phase"] = PLAYING
+    state["stakeWei"] = state["entryFeeWei"]
     state["winners"] = None
+    add_log(state, f"Cards dealt to {len(occupied)} players — the stake is {eth(state['stakeWei'])}")
     return state
 
 
-def _award_pot_to_last_standing(state):
-    (only_index,) = _active_indices(state["seats"])
-    winner_seat = state["seats"][only_index]
-    winner_seat["chips"] += state["pot"]
-    state["winners"] = [{
-        "playerId": winner_seat["playerId"],
-        "name": winner_seat["name"],
-        "label": "Won — everyone else packed",
-        "amount": state["pot"],
-    }]
-    state["phase"] = "roundComplete"
-    state["pot"] = 0
-    state["currentTurnIndex"] = -1
+def required_bet_wei(state, seat):
+    """What this player owes to stay in: the table stake, doubled if they have
+    looked at their cards. The single most important rule in Teen Patti."""
+    return state["stakeWei"] * 2 if seat["seen"] else state["stakeWei"]
+
+
+def apply_action(state, player_id, action, amount_wei=None):
+    """Applies one player's move.
+
+    action   'see' | 'pack' | 'bet' | 'show'
+    amount_wei  For 'bet'/'show': the exact wei the player just sent to the
+                contract. Must be at least required_bet_wei(). Betting MORE
+                than the minimum is a raise and lifts the stake for everyone.
+
+    The caller (server.py) is responsible for confirming the matching on-chain
+    transaction BEFORE calling this — the engine assumes the money has landed.
+    """
+    if state["phase"] != PLAYING:
+        raise EngineError("No hand is in progress")
+
+    index = find_seat_index(state, player_id)
+    if index == -1:
+        raise EngineError("You are not seated in this room")
+    seat = state["seats"][index]
+    if seat["packed"]:
+        raise EngineError("You have packed — you are out of this hand")
+    if index != state["currentTurnIndex"]:
+        raise EngineError("It is not your turn")
+
+    if action == "see":
+        return _see(state, index)
+    if action == "pack":
+        return _pack(state, index)
+    if action == "bet":
+        return _bet(state, index, amount_wei)
+    if action == "show":
+        return _show(state, index, amount_wei)
+    raise EngineError(f"Unknown action: {action}")
+
+
+def _see(state, index):
+    seat = state["seats"][index]
+    if seat["seen"]:
+        raise EngineError("You have already looked at your cards")
+    seat["seen"] = True
+    add_log(state, f"{seat['name']} looked at their cards — they now bet double")
+    return state  # looking is free and does not pass the turn
+
+
+def _pack(state, index, voluntary=True):
+    seat = state["seats"][index]
+    seat["packed"] = True
+    seat["lastAction"] = "packed"
+    add_log(state, f"{seat['name']} {'packed' if voluntary else 'left and was packed'}")
+
+    active = _active(state["seats"])
+    if len(active) == 1:
+        return _finish_last_standing(state, active[0])
+
+    if state["currentTurnIndex"] == index:
+        state["currentTurnIndex"] = _next_active_index(state["seats"], index)
     return state
 
 
-def _resolve_show(state, seat_index_a, seat_index_b):
-    a = state["seats"][seat_index_a]
-    b = state["seats"][seat_index_b]
+def _take_bet(state, index, amount_wei, verb):
+    seat = state["seats"][index]
+    required = required_bet_wei(state, seat)
+    amount = int(amount_wei) if amount_wei is not None else required
+
+    if amount < required:
+        raise EngineError(f"You must {verb} at least {eth(required)} to stay in")
+
+    seat["stakedWei"] += amount
+    state["potWei"] += amount
+    return amount, required
+
+
+def _bet(state, index, amount_wei):
+    seat = state["seats"][index]
+    amount, required = _take_bet(state, index, amount_wei, "bet")
+
+    if amount > required:
+        state["stakeWei"] = amount // 2 if seat["seen"] else amount
+        seat["lastAction"] = "raised"
+        add_log(state, f"{seat['name']} raised to {eth(amount)} — the stake is now {eth(state['stakeWei'])}")
+    else:
+        seat["lastAction"] = "chaal"
+        add_log(state, f"{seat['name']} played chaal for {eth(amount)}")
+
+    state["currentTurnIndex"] = _next_active_index(state["seats"], index)
+    return state
+
+
+def _show(state, index, amount_wei):
+    active = _active(state["seats"])
+    if len(active) != 2:
+        raise EngineError("A show is only possible when 2 players are left")
+
+    seat = state["seats"][index]
+    _take_bet(state, index, amount_wei, "pay")
+    seat["lastAction"] = "show"
+    add_log(state, f"{seat['name']} paid to call a show")
+
+    a, b = active
+    return _finish_show(state, a, b)
+
+
+def _finish_last_standing(state, index):
+    seat = state["seats"][index]
+    _end(state, [{
+        "playerId": seat["playerId"],
+        "name": seat["name"],
+        "label": "Everyone else packed",
+        "amountWei": state["potWei"],
+    }])
+    add_log(state, f"{seat['name']} wins the pot — everyone else packed")
+    return state
+
+
+def _finish_show(state, index_a, index_b):
+    a = state["seats"][index_a]
+    b = state["seats"][index_b]
     score_a = evaluate_three(a["cards"])
     score_b = evaluate_three(b["cards"])
-    cmp = compare_scores(score_a, score_b)
+    result = compare_scores(score_a, score_b)
 
-    if cmp == 0:
-        share = state["pot"] // 2
-        remainder = state["pot"] - share * 2
-        a["chips"] += share + remainder
-        b["chips"] += share
-        state["winners"] = [
-            {"playerId": a["playerId"], "name": a["name"], "label": f"{score_label(score_a)} (Pot split)", "amount": share + remainder},
-            {"playerId": b["playerId"], "name": b["name"], "label": f"{score_label(score_b)} (Pot split)", "amount": share},
-        ]
+    if result == 0:
+        half = state["potWei"] // 2
+        _end(state, [
+            {"playerId": a["playerId"], "name": a["name"],
+             "label": f"{score_label(score_a)} — split pot", "amountWei": state["potWei"] - half},
+            {"playerId": b["playerId"], "name": b["name"],
+             "label": f"{score_label(score_b)} — split pot", "amountWei": half},
+        ])
+        add_log(state, f"Show: {a['name']} and {b['name']} tied — the pot is split")
     else:
-        winner_index = seat_index_a if cmp > 0 else seat_index_b
-        winner_score = score_a if cmp > 0 else score_b
-        winner_seat = state["seats"][winner_index]
-        winner_seat["chips"] += state["pot"]
-        state["winners"] = [{"playerId": winner_seat["playerId"], "name": winner_seat["name"], "label": score_label(winner_score), "amount": state["pot"]}]
+        winner, score = (a, score_a) if result > 0 else (b, score_b)
+        loser, loser_score = (b, score_b) if result > 0 else (a, score_a)
+        _end(state, [{
+            "playerId": winner["playerId"],
+            "name": winner["name"],
+            "label": score_label(score),
+            "amountWei": state["potWei"],
+        }])
+        add_log(
+            state,
+            f"Show: {winner['name']}'s {score_label(score)} beats "
+            f"{loser['name']}'s {score_label(loser_score)}",
+        )
+    return state
 
-    state["phase"] = "roundComplete"
-    state["pot"] = 0
+
+def _end(state, winners):
+    state["winners"] = winners
+    state["phase"] = FINISHED
     state["currentTurnIndex"] = -1
     return state
 
 
-def apply_action(state, player_id, type_, amount):
-    """Applies one player action. Mutates and returns state.
+def mark_paid(state, tx_hash):
+    """The host's finishGame() transaction confirmed: the contract has sent the
+    pot to the winner(s) and this room is permanently over."""
+    if state["phase"] != FINISHED:
+        raise EngineError("The hand is not over yet")
+    state["paid"] = True
+    state["payoutTxHash"] = tx_hash
+    add_log(state, "Pot paid out on-chain — room closed")
+    return state
 
-    type: 'seeCards' | 'pack' | 'bet' | 'show'
-    amount: for 'bet'/'show', the TOTAL chips wagered this action (must be >= the
-            required minimum for the player's blind/seen status). None to call the minimum.
-    """
-    if state["phase"] != "playing":
-        raise EngineError("No active round")
-    seat_index = next((i for i, s in enumerate(state["seats"]) if s and s["playerId"] == player_id), -1)
-    if seat_index == -1:
-        raise EngineError("Player not seated")
 
-    if type_ == "seeCards":
-        if seat_index != state["currentTurnIndex"]:
-            raise EngineError("Not your turn")
-        state["seats"][seat_index]["seen"] = True
-        return state  # seeing your cards doesn't pass the turn
 
-    if seat_index != state["currentTurnIndex"]:
-        raise EngineError("Not your turn")
-    seat = state["seats"][seat_index]
+def add_log(state, text):
+    state["log"].append(text)
+    del state["log"][:-60]
+    return state
 
-    if type_ == "pack":
-        seat["packed"] = True
-        if len(_active_indices(state["seats"])) == 1:
-            return _award_pot_to_last_standing(state)
-        state["currentTurnIndex"] = _next_active_index(state["seats"], seat_index)
+
+def add_tx(state, *, kind, tx_hash, address, name, amount_wei=0):
+    """Records one on-chain transaction so every player can inspect it in the
+    'Blockchain details' panel — this list IS the audit trail of the game."""
+    if not tx_hash:
         return state
-
-    if type_ == "bet":
-        required = state["stake"] * 2 if seat["seen"] else state["stake"]
-        wager = amount if amount is not None else required
-        if wager < required:
-            raise EngineError(f"Must bet at least {required}")
-        if wager > seat["chips"]:
-            raise EngineError("Not enough chips — pack instead, all-in is not supported yet")
-
-        seat["chips"] -= wager
-        state["pot"] += wager
-        is_raise = wager > required
-        state["stake"] = (wager / 2 if seat["seen"] else wager) if is_raise else state["stake"]
-        state["currentTurnIndex"] = _next_active_index(state["seats"], seat_index)
+    if any(t["hash"] == tx_hash for t in state["txs"]):
         return state
-
-    if type_ == "show":
-        active = _active_indices(state["seats"])
-        if len(active) != 2:
-            raise EngineError("Show is only allowed between the last 2 players")
-        required = state["stake"] * 2 if seat["seen"] else state["stake"]
-        wager = amount if amount is not None else required
-        if wager < required:
-            raise EngineError(f"Must pay at least {required} to call a show")
-        if wager > seat["chips"]:
-            raise EngineError("Not enough chips to call a show")
-
-        seat["chips"] -= wager
-        state["pot"] += wager
-        a, b = active
-        return _resolve_show(state, a, b)
-
-    raise EngineError(f"Unknown action type: {type_}")
+    state["txs"].append({
+        "hash": tx_hash,
+        "kind": kind,  # create | join | start | bet | show | payout
+        "address": address,
+        "name": name,
+        "amountWei": int(amount_wei or 0),
+    })
+    return state

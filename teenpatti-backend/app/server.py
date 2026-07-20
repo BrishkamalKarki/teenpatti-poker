@@ -1,55 +1,34 @@
-"""server.py — the real-time backend for the Teen Patti frontend.
+# real-time game server that talks with the socket.js to keep both in sync, this manages the game and the game state 
+# end-point for the deployment  
 
-Implements exactly the event contract documented at the top of
-src/services/socketService.js on the frontend:
-
-    room:create    ({ hostName, maxSeats, buyIn, roomCode? })  -> ack { roomCode, playerId, state }
-    room:join      ({ roomCode, playerName, buyIn })           -> ack { playerId, state }
-    room:leave     ({ roomCode, playerId })                    -> no ack
-    room:startHand ({ roomCode })                               -> ack { state }
-    room:action    ({ roomCode, playerId, type, amount })      -> ack { state }
-    room:subscribe ({ roomCode })                               -> no ack, pushes 'room:state'
-    'room:state'   pushed to every subscriber whenever a room changes
-
-Ack shape on failure: { ok: false, error: "message" } — matches what
-socketService.js's emitWithAck() expects to reject the promise on.
-
-Run locally:
-    uvicorn app.server:app --reload --port 4000
-
-Deploy free online: see backend/README.md (Render/Railway/Fly all work with
-this exact file — no code changes needed, only environment variables).
-"""
 import os
-import uuid
 
 import socketio
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from . import engine, rooms
+from . import chain, engine, rooms
 
-# --- CORS --------------------------------------------------------------
-# Set CORS_ORIGINS to a comma-separated list of frontend origins in
-# production (e.g. "https://your-app.vercel.app,http://localhost:5173").
-# Left as "*" this accepts any origin, which is fine for local dev / a
-# quick public demo but you should lock it down before sharing widely.
-_raw_origins = os.environ.get("CORS_ORIGINS", "*")
-CORS_ORIGINS = "*" if _raw_origins.strip() == "*" else [o.strip() for o in _raw_origins.split(",") if o.strip()]
+_origins = os.environ.get("CORS_ORIGINS", "*").strip()
+CORS_ORIGINS = "*" if _origins == "*" else [o.strip() for o in _origins.split(",") if o.strip()]
 
 sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins=CORS_ORIGINS)
 
-# sid -> set of roomCodes that socket is subscribed to
-SID_ROOMS = {}
-# roomCode -> set of sids subscribed to it
-SUBSCRIBERS = {}
-# (sid, roomCode) -> playerId, so we know whose hole cards a given socket may see
+SUBSCRIBERS = {} 
+SID_ROOMS = {}  
 SID_PLAYER = {}
 
 
-def _new_player_id():
-    return "p_" + uuid.uuid4().hex[:12]
+
+def _address_id(value):
+    """A player's id IS their wallet address, lowercased. That is the whole
+    trick that keeps the game and the chain talking about the same person:
+    when the hand ends, the winner's id can be handed straight to
+    finishGame(gameId, winners) with no lookup table in between."""
+    if isinstance(value, str) and value.startswith("0x") and len(value) == 42:
+        return value.lower()
+    raise ValueError("A connected wallet is required to play")
 
 
 def _subscribe(sid, room_code, player_id=None):
@@ -65,19 +44,34 @@ def _unsubscribe(sid, room_code):
     SID_PLAYER.pop((sid, room_code), None)
 
 
-async def _broadcast(room_code, exclude=None):
-    exclude = exclude or set()
+async def _broadcast(room_code):
+    """Pushes the room to everyone watching it — each player gets their own
+    view, because each player is allowed to see different cards."""
     state = rooms.get_room(room_code)
     if not state:
         return
     for sid in list(SUBSCRIBERS.get(room_code, set())):
-        if sid in exclude:
-            continue
-        player_id = SID_PLAYER.get((sid, room_code))
-        await sio.emit("room:state", rooms.viewer_state(state, player_id), room=sid)
+        view = rooms.viewer_state(state, SID_PLAYER.get((sid, room_code)))
+        await sio.emit("room:state", view, room=sid)
 
 
-# --- connection lifecycle ------------------------------------------------
+def _host_seat(state):
+    return next((s for s in state["seats"] if s and s["isHost"]), None)
+
+
+def _require_host(state, player_id):
+    host = _host_seat(state)
+    if not host or host["playerId"] != player_id:
+        raise engine.EngineError("Only the host can do that")
+
+
+def _ok(state, player_id):
+    return {"state": rooms.viewer_state(state, player_id)}
+
+
+def _fail(message):
+    return {"ok": False, "error": str(message)}
+
 
 @sio.event
 async def connect(sid, environ, auth):
@@ -86,147 +80,237 @@ async def connect(sid, environ, auth):
 
 @sio.event
 async def disconnect(sid):
+    """A dropped socket does NOT pack you — phones sleep and wifi drops, and
+    your ETH is already in the pot. You keep your seat and can rejoin with the
+    same wallet; the host has a kick button if someone truly never comes back."""
     for room_code in list(SID_ROOMS.get(sid, set())):
         _unsubscribe(sid, room_code)
     SID_ROOMS.pop(sid, None)
 
 
-# --- room lifecycle events -------------------------------------------------
-
 @sio.on("room:create")
 async def room_create(sid, data):
     data = data or {}
     try:
-        host_name = (data.get("hostName") or "").strip() or "Host"
-        max_seats = int(data.get("maxSeats") or 6)
-        boot_amount = data.get("buyIn")
-        boot_amount = 1000 if boot_amount is None else boot_amount
+        rooms.sweep_expired()
 
-        desired_code = data.get("roomCode")
-        room_code = str(desired_code) if desired_code not in (None, "") else rooms.generate_room_code()
-        if rooms.get_room(room_code) is not None:
-            # Someone already holds that code (e.g. stale room from a prior
-            # server run reusing an on-chain roomId) — don't clobber it.
-            room_code = rooms.generate_room_code()
+        room_code = rooms.normalize_code(data.get("roomCode"))
+        if len(room_code) != rooms.CODE_LENGTH:
+            return _fail("Bad room code")
+        if rooms.get_room(room_code):
+            return _fail("That room code is taken, try again")
 
-        state = engine.create_room_state(room_code, max_seats, boot_amount)
-        player_id = _new_player_id()
-        engine.seat_player(state, player_id, host_name, boot_amount, is_host=True)
+        game_id = data.get("gameId")
+        if game_id is None:
+            return _fail("Create the room on-chain first")
+
+        entry_fee_wei = int(data.get("entryFeeWei"))
+        max_seats = int(data.get("maxSeats") or 4)
+        if not 2 <= max_seats <= 4:
+            return _fail("A table seats between 2 and 4 players")
+
+        host_id = _address_id(data.get("address"))
+        host_name = (data.get("hostName") or "").strip()[:20] or "Host"
+        tx_hash = data.get("txHash")
+
+        await chain.verify_entry_fee(tx_hash, entry_fee_wei, host_id)
+
+        state = engine.create_room_state(room_code, int(game_id), entry_fee_wei, max_seats)
+        engine.seat_player(state, host_id, host_name, is_host=True)
+        engine.add_tx(state, kind="create", tx_hash=tx_hash, address=host_id,
+                      name=host_name, amount_wei=entry_fee_wei)
+
         rooms.save_room(room_code, state)
-        _subscribe(sid, room_code, player_id)
+        _subscribe(sid, room_code, host_id)
+        return {"roomCode": room_code, "playerId": host_id, **_ok(state, host_id)}
+    except (engine.EngineError, ValueError) as e:
+        return _fail(e)
 
-        return {"roomCode": room_code, "playerId": player_id, "state": rooms.viewer_state(state, player_id)}
-    except engine.EngineError as e:
-        return {"ok": False, "error": str(e)}
-    except Exception:
-        return {"ok": False, "error": "Could not create room"}
+
+@sio.on("room:lookup")
+async def room_lookup(sid, data):
+    """Read-only: what a room costs and whether it has space. No seat is taken
+    and no wallet is needed — the Join form calls this before asking anyone to
+    pay anything."""
+    state = rooms.get_room((data or {}).get("roomCode"))
+    if not state:
+        return _fail("No room with that code")
+    return rooms.public_summary(state)
 
 
 @sio.on("room:join")
 async def room_join(sid, data):
     data = data or {}
-    room_code = data.get("roomCode")
-    state = rooms.get_room(room_code)
+    state = rooms.get_room(data.get("roomCode"))
     if not state:
-        return {"ok": False, "error": "Room not found"}
+        return _fail("No room with that code")
 
     try:
-        player_name = (data.get("playerName") or "").strip() or "Player"
-        buy_in = data.get("buyIn")
-        buy_in = state["bootAmount"] if buy_in is None else buy_in
+        player_id = _address_id(data.get("address"))
+        name = (data.get("playerName") or "").strip()[:20] or "Player"
+        tx_hash = data.get("txHash")
 
-        player_id = _new_player_id()
-        engine.seat_player(state, player_id, player_name, buy_in, is_host=False)
-        rooms.save_room(room_code, state)
-        _subscribe(sid, room_code, player_id)
-        await _broadcast(room_code, exclude={sid})
+        await chain.verify_entry_fee(tx_hash, state["entryFeeWei"], player_id)
 
-        return {"playerId": player_id, "state": rooms.viewer_state(state, player_id)}
+        engine.seat_player(state, player_id, name)
+        engine.add_tx(state, kind="join", tx_hash=tx_hash, address=player_id,
+                      name=name, amount_wei=state["entryFeeWei"])
+
+        rooms.save_room(state["roomCode"], state)
+        _subscribe(sid, state["roomCode"], player_id)
+        await _broadcast(state["roomCode"])
+        return {"playerId": player_id, **_ok(state, player_id)}
+    except (engine.EngineError, ValueError) as e:
+        return _fail(e)
+
+
+@sio.on("room:start")
+async def room_start(sid, data):
+    data = data or {}
+    state = rooms.get_room(data.get("roomCode"))
+    if not state:
+        return _fail("No room with that code")
+
+    try:
+        player_id = data.get("playerId")
+        _require_host(state, player_id)
+        engine.start_game(state)
+        engine.add_tx(state, kind="start", tx_hash=data.get("txHash"), address=player_id,
+                      name=_host_seat(state)["name"])
+        rooms.save_room(state["roomCode"], state)
+        await _broadcast(state["roomCode"])
+        return _ok(state, player_id)
     except engine.EngineError as e:
-        return {"ok": False, "error": str(e)}
+        return _fail(e)
+
+
+@sio.on("room:action")
+async def room_action(sid, data):
+    """One move. 'see' and 'pack' are free and instant. 'bet' and 'show' arrive
+    only after the player's bet() transaction has confirmed, and carry the wei
+    they actually sent — the engine checks that against what they owe."""
+    data = data or {}
+    state = rooms.get_room(data.get("roomCode"))
+    if not state:
+        return _fail("No room with that code")
+
+    try:
+        player_id = data.get("playerId")
+        action = data.get("action")
+        amount_wei = int(data["amountWei"]) if data.get("amountWei") is not None else None
+        tx_hash = data.get("txHash")
+
+        if action in ("bet", "show"):
+            if not tx_hash:
+                raise engine.EngineError("That bet has no transaction — send the ETH first")
+            await chain.verify_bet(tx_hash, amount_wei, player_id)
+
+        seat_index = engine.find_seat_index(state, player_id)
+        name = state["seats"][seat_index]["name"] if seat_index != -1 else "?"
+
+        engine.apply_action(state, player_id, action, amount_wei)
+
+        if action in ("bet", "show"):
+            engine.add_tx(state, kind=action, tx_hash=tx_hash, address=player_id,
+                          name=name, amount_wei=amount_wei)
+
+        rooms.save_room(state["roomCode"], state)
+        await _broadcast(state["roomCode"])
+        return _ok(state, player_id)
+    except (engine.EngineError, ValueError) as e:
+        return _fail(e)
+
+
+@sio.on("room:finish")
+async def room_finish(sid, data):
+    """Host confirms the pot has been paid out on-chain. The room is over."""
+    data = data or {}
+    state = rooms.get_room(data.get("roomCode"))
+    if not state:
+        return _fail("No room with that code")
+
+    try:
+        player_id = data.get("playerId")
+        _require_host(state, player_id)
+        tx_hash = data.get("txHash")
+
+        engine.mark_paid(state, tx_hash)
+        engine.add_tx(state, kind="payout", tx_hash=tx_hash, address=state["winners"][0]["playerId"],
+                      name=", ".join(w["name"] for w in state["winners"]),
+                      amount_wei=sum(int(w["amountWei"]) for w in state["winners"]))
+
+        rooms.save_room(state["roomCode"], state)
+        await _broadcast(state["roomCode"])
+        return _ok(state, player_id)
+    except engine.EngineError as e:
+        return _fail(e)
+
+
+@sio.on("room:kick")
+async def room_kick(sid, data):
+    """Host's escape hatch for a player who walked away mid-hand: it packs
+    them, so the hand can finish. It cannot take their money — their ETH stays
+    in the pot exactly as if they had folded, which is what packing means."""
+    data = data or {}
+    state = rooms.get_room(data.get("roomCode"))
+    if not state:
+        return _fail("No room with that code")
+
+    try:
+        player_id = data.get("playerId")
+        _require_host(state, player_id)
+        target = (data.get("targetId") or "").lower()
+        if target == player_id:
+            raise engine.EngineError("You cannot pack yourself this way — use Pack on your turn")
+        engine.leave_seat(state, target)
+        rooms.save_room(state["roomCode"], state)
+        await _broadcast(state["roomCode"])
+        return _ok(state, player_id)
+    except engine.EngineError as e:
+        return _fail(e)
 
 
 @sio.on("room:leave")
 async def room_leave(sid, data):
     data = data or {}
-    room_code = data.get("roomCode")
+    state = rooms.get_room(data.get("roomCode"))
     player_id = data.get("playerId")
-    state = rooms.get_room(room_code)
     if state and player_id:
         engine.leave_seat(state, player_id)
-        rooms.save_room(room_code, state)
-        await _broadcast(room_code)
-    _unsubscribe(sid, room_code)
-    # No ack: socketService.leaveRoom() fires this without a callback.
-
-
-@sio.on("room:startHand")
-async def room_start_hand(sid, data):
-    data = data or {}
-    room_code = data.get("roomCode")
-    state = rooms.get_room(room_code)
-    if not state:
-        return {"ok": False, "error": "Room not found"}
-
-    try:
-        engine.start_round(state)
-        rooms.save_room(room_code, state)
-        await _broadcast(room_code)
-        player_id = SID_PLAYER.get((sid, room_code))
-        return {"state": rooms.viewer_state(state, player_id)}
-    except engine.EngineError as e:
-        return {"ok": False, "error": str(e)}
-
-
-@sio.on("room:action")
-async def room_action(sid, data):
-    data = data or {}
-    room_code = data.get("roomCode")
-    player_id = data.get("playerId")
-    action_type = data.get("type")
-    amount = data.get("amount")
-
-    state = rooms.get_room(room_code)
-    if not state:
-        return {"ok": False, "error": "Room not found"}
-
-    try:
-        engine.apply_action(state, player_id, action_type, amount)
-        rooms.save_room(room_code, state)
-        await _broadcast(room_code)
-        return {"state": rooms.viewer_state(state, player_id)}
-    except engine.EngineError as e:
-        return {"ok": False, "error": str(e)}
+        rooms.save_room(state["roomCode"], state)
+        await _broadcast(state["roomCode"])
+        if not any(state["seats"]):
+            rooms.delete_room(state["roomCode"])
+    _unsubscribe(sid, rooms.normalize_code(data.get("roomCode")))
 
 
 @sio.on("room:subscribe")
 async def room_subscribe(sid, data):
+    """Called on page load — including after a refresh, where the browser
+    remembers which wallet it was playing as and passes it back so you get your
+    own cards again instead of being treated as a spectator."""
     data = data or {}
-    room_code = data.get("roomCode")
+    room_code = rooms.normalize_code(data.get("roomCode"))
     if not room_code:
         return
-    # Frontend doesn't send playerId on subscribe today, but accept it if a
-    # future client (or a page-refresh reconnect) does, so it can still see
-    # its own cards instead of being treated as a spectator.
-    player_id = data.get("playerId") or SID_PLAYER.get((sid, room_code))
+    player_id = (data.get("playerId") or "").lower() or SID_PLAYER.get((sid, room_code))
     _subscribe(sid, room_code, player_id)
 
     state = rooms.get_room(room_code)
     if state:
         await sio.emit("room:state", rooms.viewer_state(state, player_id), room=sid)
-    # No ack: socketService.subscribe() / getRoomState() listen for the
-    # 'room:state' push above instead of a callback.
+    else:
+        await sio.emit("room:gone", {"roomCode": room_code}, room=sid)
 
-
-# --- health check / ASGI app -----------------------------------------------
 
 async def health(request):
-    return JSONResponse({"ok": True, "rooms": len(rooms.ROOMS)})
+    return JSONResponse({
+        "ok": True,
+        "rooms": len(rooms.ROOMS),
+        "verifyingOnChain": chain.is_enabled(),
+    })
 
 
 starlette_app = Starlette(routes=[Route("/", health), Route("/healthz", health)])
 
-# Mount Socket.IO on top of a tiny Starlette app so free hosts (Render,
-# Railway, Fly) have something to hit for their health check, and so you get
-# a friendly response instead of a 404 if you open the URL in a browser.
 app = socketio.ASGIApp(sio, other_asgi_app=starlette_app, socketio_path="socket.io")

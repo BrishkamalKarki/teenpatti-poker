@@ -1,11 +1,5 @@
-"""evaluator.py — 1:1 port of the frontend's src/utils/teenPattiEvaluator.js.
+# evaluates the cards combination and returns the score
 
-Ranks a 3-card Teen Patti hand and returns a comparable score.
-Score shape: [handRank, ...tiebreakers] where handRank is:
-    5 trail (three of a kind), 4 pure sequence (straight flush),
-    3 sequence (straight), 2 color (flush), 1 pair, 0 high card
-Higher list (compared element by element, left to right) wins.
-"""
 from collections import Counter
 
 RANK_VALUE = {

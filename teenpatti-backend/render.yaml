@@ -1,3 +1,5 @@
+# Render deployment (free tier works).
+# Point Render at this repo, set Root Directory to teenpatti-backend.
 services:
   - type: web
     name: teenpatti-backend
@@ -5,6 +7,13 @@ services:
     runtime: python
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.server:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
     envVars:
+      # Set this to your Vercel URL once the frontend is deployed.
       - key: CORS_ORIGINS
         value: "*"
+      # Optional on-chain verification — see .env.example / app/chain.py
+      - key: ETH_RPC_URL
+        sync: false
+      - key: CONTRACT_ADDRESS
+        sync: false
