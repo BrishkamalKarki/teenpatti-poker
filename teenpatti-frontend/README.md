@@ -1,82 +1,51 @@
-# तीन पत्ती (Teen Patti Nepal) — Frontend
+# Frontend
 
-Adapted from the poker-frontend base you already had, restyled for Nepali Teen
-Patti rules and wired to `TeenPattiRoom.sol` for real ETH bets on Anvil.
-
-## What changed vs. the poker base
-
-| Poker (base)                          | Teen Patti (this)                                             |
-|----------------------------------------|-----------------------------------------------------------------|
-| `pokerEngine.js`, `handEvaluator.js`   | `teenPattiEngine.js`, `teenPattiEvaluator.js`                  |
-| 2 hole cards + 5 community cards       | 3 cards per player, **no** community cards                      |
-| Fold / Check / Call / Raise            | पास (Pack) / देख्नुहोस् (See) / चाल (Chaal) / रेज (Raise) / शो (Show) |
-| `PokerTable.jsx`                       | `TeenPattiTable.jsx` (pot + stake only, no `CommunityCards`)    |
-| `walletService.js` — empty stub        | `walletService.js` — real `ethers.js` calls to `TeenPattiRoom.sol` |
-| Bottle-green felt / brass ("Felt & Fortune") | Maroon velvet felt / gold + Nepal-flag crimson & blue          |
-| Latin-only labels                      | Devanagari labels throughout (`Noto Sans Devanagari`, `Yatra One`) |
-
-Everything else — `RoomContext.jsx`, `useRoom.js`, `socketService.js`,
-`seatPositions.js`, `deck.js`, `Button`/`ChipStack`/`PlayingCard` — is
-untouched, because it was already game-agnostic.
-
-## How the pieces fit together (matches the blockchain workflow we designed)
-
-1. **Lobby → Create Room**: host picks player count + boot amount (in ETH),
-   signs a transaction via `walletService.createRoomOnChain()` — this is the
-   *real* on-chain `createRoom()` call on `TeenPattiRoom.sol`. The returned
-   `roomId` is then used as the socket room code too, so one code opens both
-   the game state and the contract room.
-2. **Lobby → Join Room**: reads the room's boot amount straight from the
-   contract (`getRoomOnChain`), pays it (`joinRoomOnChain`), then joins the
-   socket room.
-3. **In-room actions**: `ActionBar` fires the socket action first — this
-   updates `teenPattiEngine.js`'s authoritative state instantly — then, for
-   money-moving actions (`bet`, `show`), also submits the matching
-   `placeBetOnChain()` transaction. `seeCards` and `pack` never touch the
-   chain, since no ETH moves.
-4. **Round end**: once `teenPattiEngine.js` resolves a round, the host gets a
-   "चेनमा भुक्तानी पुष्टि गर्नुहोस्" (Settle on-chain) button, which calls
-   `settleRoundOnChain()` with the exact winners/amounts the engine computed
-   — this is the contract's `settleRound()`, paying out via the pull-payment
-   `pendingWithdrawals` balance.
-
-## ⚠️ Units convention
-
-Everywhere in this app — `chips`, `bootAmount`, `stake`, bet amounts — are
-**plain ETH values** (e.g. `0.01`), not wei, not an abstract chip count. This
-keeps `teenPattiEngine.js` (plain JS numbers) and `TeenPattiRoom.sol` (wants
-ETH) trivially in sync — `walletService.js` is the only place that ever calls
-`parseEther`/`formatEther`. If you'd rather have a real chip economy
-decoupled from ETH's price, that's the "Option B: ERC20 chip token" upgrade
-we talked about — not implemented here on purpose, see the contract-design
-conversation for why.
-
-## Setup
+React + Vite. Talks to a wallet through `ethers`, and to the game server
+through `socket.io-client`.
 
 ```bash
-cp .env.example .env
-# fill in VITE_TEENPATTI_CONTRACT_ADDRESS after `forge create TeenPattiRoom.sol`
 npm install
-npm run dev
+cp .env.example .env      # fill in VITE_CONTRACT_ADDRESS
+npm run dev               # http://localhost:5173
+npm test                  # render tests
+npm run build
 ```
 
-You'll also need:
-- Anvil running (`anvil`) with `TeenPattiRoom.sol` deployed to it
-- Your existing Node/socket.io backend, updated to run `teenPattiEngine.js`
-  instead of `pokerEngine.js`, and to accept the optional `roomCode` field on
-  `room:create` (see `socketService.js` — currently just forwarded through;
-  your backend should honor it if present so the socket room code matches the
-  on-chain `roomId`, otherwise it can keep auto-generating as before)
+## The two files that matter
 
-## What's intentionally left as a seam, not built
+- **`src/lib/contract.js`** — the only file that knows about wallets or the
+  contract. Every on-chain action in the game is one function in here.
+- **`src/lib/socket.js`** — the only file that knows about the server. The
+  event names match `teenpatti-backend/app/server.py`'s docstring.
 
-- **No side-show** (private mid-round card comparison) — documented in
-  `teenPattiEngine.js` as a deliberate v1 simplification.
-- **No all-in / side pots** — a player who can't cover a bet must pack.
-- **No room "leave before round starts" refund path** on the contract side —
-  flagged in the earlier contract review, worth adding before this goes
-  beyond a workshop demo.
-- **Card back / felt texture images** were dropped from `assets/` since they
-  were poker-specific; `PlayingCard.jsx` renders cards in pure CSS/text so
-  nothing is broken, but drop new art into `src/assets/images/` if you want a
-  more illustrated look.
+Everything else is presentation.
+
+## Environment variables
+
+| Variable | Purpose |
+| --- | --- |
+| `VITE_CONTRACT_ADDRESS` | Where TeenPattiGame.sol is deployed. Must match your wallet's network. |
+| `VITE_SERVER_URL` | The game server. Defaults to `http://localhost:4000`. |
+| `VITE_RPC_URL` | Optional read-only RPC, so the Blockchain panel works before connecting a wallet. |
+
+Vite bakes these in at build time — after changing them on Vercel you must
+redeploy, not just restart.
+
+## Deploying to Vercel
+
+Root Directory `teenpatti-frontend`. `vercel.json` sets the build and the SPA
+rewrite (without it, refreshing on `/room/7K9XM` would 404).
+
+## Styling
+
+Two stylesheets do the layout work:
+
+- `src/styles/theme.css` — every colour, size, radius and spacing step. Nothing
+  else in the app invents its own, which is what keeps components aligned.
+- `src/styles/global.css` — buttons, panels, fields, badges, modal. Defined
+  once so every button is the same height and every panel lines up.
+
+The table (`src/styles/room.css`) places seats in named cells of a CSS grid
+rather than at percentage positions around an ellipse. A grid cell cannot
+overlap its neighbour or hang off the edge of the felt, at any window size,
+with any number of players, however long a name is.

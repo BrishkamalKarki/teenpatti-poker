@@ -1,55 +1,55 @@
-/*
-  Design tokens — "Teen Patti Nepal"
-  A festive Dashain-tihar card table, not a Vegas casino floor: deep maroon/crimson
-  velvet felt (like the cloth used for real home teen-patti games), gold/brass trim,
-  and Nepal-flag crimson + royal blue as accent colors. All UI copy is English;
-  the "Teen Patti" wordmark uses Yatra One, a Devanagari-style display font that
-  still renders Latin letters, to keep that festive Nepali feel.
-*/
-@import url('https://fonts.googleapis.com/css2?family=Yatra+One&family=Noto+Sans+Devanagari:wght@400;600;700&family=Inter:wght@400;500;600;700&display=swap');
 
 :root {
-  /* Color — Nepal flag crimson + royal blue, maroon velvet felt */
-  --felt-950: #2b0a0f;
-  --felt-800: #4a1018;
-  --felt-700: #661621;
-  --rail-brass: #d4af37;
-  --rail-brass-bright: #f0d878;
-  --rail-brass-dim: #97822a;
-  --ink-900: #150507;
-  --ivory-100: #fbf1e4;
-  --ivory-200: #e8d9c2;
-  --nepal-crimson: #dc143c;
-  --nepal-crimson-bright: #ff2d4f;
-  --nepal-blue: #003893;
-  --nepal-blue-bright: #1d5fd6;
-  --felt-line: rgba(251, 241, 228, 0.08);
+  --bg: #14060a;
+  --bg-soft: #1e0a10;
+  --felt: #5a1220;
+  --felt-dark: #330a13;
+  --felt-light: #78182a;
+  --rail: #6b4a1f;
+  --rail-light: #a5762f;
 
-  /* Semantic aliases used across components (kept so poker-derived CSS still resolves) */
-  --ember-600: var(--nepal-crimson);
-  --ember-500: var(--nepal-crimson-bright);
+  --gold: #d9b036;
+  --gold-bright: #f5da84;
+  --gold-dim: #8d7127;
+  --ivory: #fbf3e6;
+  --ivory-soft: #d9c9b4;
+  --muted: #9c8874;
 
-  /* Type */
-  --font-display: 'Yatra One', 'Cinzel', 'Georgia', serif;
-  --font-devanagari: 'Yatra One', 'Noto Sans Devanagari', sans-serif;
-  --font-body: 'Inter', 'Noto Sans Devanagari', system-ui, sans-serif;
-  --step--1: 0.8rem;
-  --step-0: 1rem;
-  --step-1: 1.25rem;
-  --step-2: 1.75rem;
-  --step-3: 2.5rem;
-  --step-4: 3.5rem;
+  --crimson: #dc143c;
+  --crimson-bright: #ff4763;
+  --blue: #2f6fe0;
+  --green: #3fae72;
 
-  /* Layout */
-  --radius-sm: 6px;
-  --radius-md: 12px;
-  --radius-lg: 24px;
-  --space-1: 0.5rem;
-  --space-2: 1rem;
-  --space-3: 1.5rem;
-  --space-4: 2.5rem;
-  --space-5: 4rem;
+  --line: rgba(251, 243, 230, 0.12);
+  --line-strong: rgba(251, 243, 230, 0.24);
 
-  --shadow-deep: 0 20px 60px rgba(0, 0, 0, 0.6);
-  --shadow-card: 0 6px 16px rgba(0, 0, 0, 0.45);
+  --font-display: 'Yatra One', Georgia, serif;
+  --font-body: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  --text-xs: 0.72rem;
+  --text-sm: 0.82rem;
+  --text-md: 0.95rem;
+  --text-lg: 1.15rem;
+  --text-xl: 1.6rem;
+  --text-2xl: 2.4rem;
+
+  --s1: 0.25rem;
+  --s2: 0.5rem;
+  --s3: 0.75rem;
+  --s4: 1rem;
+  --s5: 1.5rem;
+  --s6: 2rem;
+  --s7: 3rem;
+
+  --radius-sm: 8px;
+  --radius: 14px;
+  --radius-lg: 22px;
+  --radius-pill: 999px;
+
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.35);
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 24px 70px rgba(0, 0, 0, 0.6);
+
+  --sidebar-width: 330px;
 }

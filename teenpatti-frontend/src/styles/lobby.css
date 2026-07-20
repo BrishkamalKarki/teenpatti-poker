@@ -1,0 +1,209 @@
+
+
+.lobby {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.lobby__top {
+  display: flex;
+  justify-content: flex-end;
+  padding: var(--s4) var(--s5);
+}
+
+.lobby__main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s6);
+  width: 100%;
+  max-width: 520px;
+  margin: 0 auto;
+  padding: var(--s2) var(--s4) var(--s7);
+}
+
+.lobby__brand {
+  text-align: center;
+}
+
+.lobby__title {
+  font-family: var(--font-display);
+  font-size: clamp(2.6rem, 9vw, 4rem);
+  line-height: 1.1;
+  background: linear-gradient(180deg, var(--gold-bright), var(--gold) 60%, var(--gold-dim));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  /* The gradient text loses the glow that sells the "brass" look, so it is
+     re-added underneath as a shadow on the block itself. */
+  filter: drop-shadow(0 4px 18px rgba(217, 176, 54, 0.25));
+}
+
+.lobby__subtitle {
+  margin-top: var(--s2);
+  color: var(--ivory-soft);
+  font-size: var(--text-sm);
+}
+
+.lobby__card {
+  width: 100%;
+  padding: var(--s5);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(180deg, rgba(120, 24, 42, 0.22), rgba(30, 10, 16, 0.85));
+  box-shadow: var(--shadow);
+}
+
+.tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--s1);
+  padding: var(--s1);
+  margin-bottom: var(--s5);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.tabs__btn {
+  height: 38px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.tabs__btn.is-active {
+  background: rgba(217, 176, 54, 0.16);
+  color: var(--gold-bright);
+}
+
+.lobby__pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--s4);
+  align-items: start;
+}
+
+/* The number-of-players picker: three equal segments that always fill the
+   column, so it lines up exactly with the input beside it. */
+.seg {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--s1);
+  padding: var(--s1);
+  height: 46px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.seg__btn {
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ivory-soft);
+  font-size: var(--text-md);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.seg__btn.is-active {
+  background: rgba(217, 176, 54, 0.18);
+  color: var(--gold-bright);
+}
+
+.lobby__preview {
+  min-height: 84px;
+  display: flex;
+  align-items: center;
+}
+
+.lobby__preview > * {
+  width: 100%;
+}
+
+.lobby__warn {
+  margin-top: var(--s2);
+  color: var(--crimson-bright);
+  font-size: var(--text-sm);
+}
+
+.how {
+  display: grid;
+  gap: var(--s4);
+  width: 100%;
+}
+
+.how__step {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  gap: var(--s3);
+  align-items: start;
+}
+
+.how__num {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--gold-dim);
+  border-radius: 50%;
+  background: rgba(217, 176, 54, 0.1);
+  color: var(--gold-bright);
+  font-family: var(--font-display);
+  font-size: var(--text-sm);
+}
+
+.how__title {
+  font-weight: 600;
+  font-size: var(--text-sm);
+  color: var(--ivory);
+  margin-bottom: 2px;
+}
+
+.wallet-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  height: 34px;
+  padding: 0 var(--s3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-pill);
+  background: rgba(0, 0, 0, 0.3);
+  font-size: var(--text-xs);
+}
+
+.wallet-chip__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 8px var(--green);
+  flex-shrink: 0;
+}
+
+.wallet-chip__address {
+  color: var(--ivory);
+  font-size: var(--text-xs);
+}
+
+.wallet-chip__meta {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+@media (max-width: 560px) {
+  .lobby__pair {
+    grid-template-columns: 1fr;
+  }
+  .wallet-chip__meta {
+    display: none;
+  }
+}
